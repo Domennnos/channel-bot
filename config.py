@@ -19,6 +19,10 @@ BASE_DIR = Path(__file__).resolve().parent
 # На хостинге сюда подключают постоянный диск (Volume) и задают DATA_DIR=/data.
 DATA_DIR = Path(os.environ.get("DATA_DIR", "") or BASE_DIR)
 DATA_DIR.mkdir(parents=True, exist_ok=True)
+
+# Читаем секреты из файла .env в переменные окружения: сначала из папки данных, потом из папки бота.
+load_dotenv(DATA_DIR / ".env")
+load_dotenv(BASE_DIR / ".env")
 # Ваши настройки лежат в DATA_DIR (так их не затрёт обновление бота); если там файла нет — берём образец из папки бота.
 SETTINGS_PATH = DATA_DIR / "settings.json" if (DATA_DIR / "settings.json").exists() else BASE_DIR / "settings.json"
 DB_PATH = DATA_DIR / "bot_data.db"
@@ -27,8 +31,6 @@ RUNTIME_PATH = DATA_DIR / "runtime.json"  # сюда пишутся только
 # Какие настройки можно менять командами бота (/mode, /replies)
 ИЗМЕНЯЕМЫЕ_КОМАНДАМИ = ("режим_публикации", "ответы_на_комментарии")
 
-# Читаем секреты из файла .env (если он есть) в переменные окружения.
-load_dotenv(BASE_DIR / ".env")
 
 # Дни недели так, как их понимает планировщик Telegram-библиотеки: 0 = воскресенье.
 ДНИ_НЕДЕЛИ = {"вс": 0, "пн": 1, "вт": 2, "ср": 3, "чт": 4, "пт": 5, "сб": 6}

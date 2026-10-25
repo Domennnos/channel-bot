@@ -37,6 +37,8 @@ def _получить_клиента() -> anthropic.Anthropic:
         _клиент = anthropic.Anthropic(
             api_key=config.ANTHROPIC_API_KEY,
             base_url=config.ANTHROPIC_BASE_URL or None,  # None = обычный адрес Anthropic
+            # Посредники (getapi и т.п.) принимают только классическую версию протокола.
+            default_headers={"anthropic-version": "2023-06-01"} if config.ANTHROPIC_BASE_URL else None,
             max_retries=2, timeout=120.0,
         )
     return _клиент

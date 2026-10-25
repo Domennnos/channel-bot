@@ -21,21 +21,39 @@ fi
 source .venv/bin/activate
 pip install -q -r requirements.txt || { echo "Не получилось установить библиотеки (проверьте интернет)."; pause; exit 1; }
 
-# 3. Если в файле .env чего-то нет — спрашиваем (символы при вводе не видны, это нормально)
-touch .env; chmod 600 .env
+# 3. Токены и база живут в отдельной папке ~/channel-bot-data — так их не потеряешь при обновлении бота.
+export DATA_DIR="$HOME/channel-bot-data"
+mkdir -p "$DATA_DIR"
+ENV_FILE="$DATA_DIR/.env"
+# Переезд: если в новой папке ещё пусто — забираем данные из старой копии бота рядом (или из этой).
+if [ ! -s "$ENV_FILE" ]; then
+  for old in ./ ../channel-bot-main*/; do
+    if [ -s "$old.env" ]; then
+      cp "$old.env" "$ENV_FILE"
+      for f in bot_data.db runtime.json; do
+        [ -f "$old$f" ] && [ ! -f "$DATA_DIR/$f" ] && cp "$old$f" "$DATA_DIR/$f"
+      done
+      echo "Нашёл сохранённые настройки в $old — перенёс."
+      break
+    fi
+  done
+fi
+touch "$ENV_FILE"; chmod 600 "$ENV_FILE"
 # Если в .env когда-то попал мусор — оставляем только правильные строки.
-LC_ALL=C grep -E '^(TELEGRAM_BOT_TOKEN|ANTHROPIC_API_KEY|ANTHROPIC_BASE_URL|CHANNEL_ID|OWNER_ID|DISCUSSION_CHAT_ID)=[A-Za-z0-9:_@./-]+$' .env > .env.clean
-mv .env.clean .env; chmod 600 .env
+LC_ALL=C grep -E '^(TELEGRAM_BOT_TOKEN|ANTHROPIC_API_KEY|ANTHROPIC_BASE_URL|CHANNEL_ID|OWNER_ID|DISCUSSION_CHAT_ID)=[A-Za-z0-9:_@./-]+$' "$ENV_FILE" > "$ENV_FILE.clean"
+mv "$ENV_FILE.clean" "$ENV_FILE"; chmod 600 "$ENV_FILE"
+# Спрашиваем то, чего не хватает (символы при вводе не видны, это нормально).
 ask() {  # имя  подсказка  [необязательно]
-  if grep -q "^$1=." .env; then return; fi
+  if grep -q "^$1=." "$ENV_FILE"; then return; fi
   while true; do
     read -r -s -p "$2: " val; echo
     val=$(echo "$val" | tr -d '[:space:]')
     if [ -n "$val" ] || [ "$3" = "необязательно" ]; then break; fi
-    echo "Пусто. Вставьте val и нажмите Enter."
+    echo "Пусто. Вставьте значение и нажмите Enter."
   done
   if [ -n "$val" ]; then
-    grep -v "^$1=" .env > .env.tmp; echo "$1=$val" >> .env.tmp; mv .env.tmp .env; chmod 600 .env
+    grep -v "^$1=" "$ENV_FILE" > "$ENV_FILE.tmp"; echo "$1=$val" >> "$ENV_FILE.tmp"
+    mv "$ENV_FILE.tmp" "$ENV_FILE"; chmod 600 "$ENV_FILE"
   fi
 }
 ask TELEGRAM_BOT_TOKEN "Вставьте токен бота от BotFather и нажмите Enter"

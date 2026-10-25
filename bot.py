@@ -291,11 +291,12 @@ def _данные_для_отчёта(дней: int) -> str:
     return "\n\n".join(блоки)
 
 
-async def отправить_отчёт(context: ContextTypes.DEFAULT_TYPE):
+async def отправить_отчёт(context: ContextTypes.DEFAULT_TYPE, *, молча_если_пусто: bool = False):
     """Недельный отчёт (запускается по расписанию и по команде /report)."""
     данные = _данные_для_отчёта(7)
     if not данные:
-        await _написать_владельцу(context, "📊 За эту неделю в канале не было постов, отчёт строить не из чего.")
+        if not молча_если_пусто:
+            await _написать_владельцу(context, "📊 За эту неделю в канале не было постов, отчёт строить не из чего.")
         db.записать_отметку("последний_отчёт")
         return
     try:
@@ -548,7 +549,7 @@ async def догнать_пропущенное(context: ContextTypes.DEFAULT_TY
     )
     отчёт = db.отметка("последний_отчёт")
     if срок and сейчас - срок <= ДОГОНЯЕМ_ПРОПУЩЕННОЕ_ДО and (отчёт is None or отчёт < срок):
-        await отправить_отчёт(context)
+        await отправить_отчёт(context, молча_если_пусто=True)
 
 
 async def ошибка(update, context: ContextTypes.DEFAULT_TYPE):
