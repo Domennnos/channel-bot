@@ -229,6 +229,14 @@ def комментарии_поста(channel_msg_id: int, сколько: int =
         ).fetchall()
 
 
+def все_опубликованные() -> list:
+    """Все опубликованные посты, от старых к новым (для отчёта за всё время)."""
+    with _подключение() as c:
+        return c.execute(
+            "SELECT * FROM posts WHERE status='published' ORDER BY published_at"
+        ).fetchall()
+
+
 def посты_за_дни(дней: int) -> list:
     """Опубликованные посты за последние N дней (для отчётов)."""
     граница = (datetime.now(timezone.utc) - timedelta(days=дней)).isoformat(timespec="seconds")
