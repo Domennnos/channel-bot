@@ -5,6 +5,37 @@ cd "$(dirname "$0")" || exit 1
 
 pause() { echo; read -r -p "Нажмите Enter, чтобы закрыть окно…" _; }
 
+# 0. Автообновление: скачиваем свежую версию бота с GitHub и обновляем файлы кода.
+#    Токены, база и ваши настройки лежат в ~/channel-bot-data и не затрагиваются.
+BOT_ZIP_URL="${BOT_ZIP_URL:-https://github.com/Domennnos/channel-bot/archive/refs/heads/main.zip}"
+if [ -z "$BOT_JUST_UPDATED" ]; then
+  echo "Проверяю обновления…"
+  tmp=$(mktemp -d)
+  if curl -fsSL --max-time 60 "$BOT_ZIP_URL" -o "$tmp/bot.zip" 2>/dev/null && unzip -q "$tmp/bot.zip" -d "$tmp" 2>/dev/null; then
+    src=$(find "$tmp" -mindepth 1 -maxdepth 1 -type d | head -n 1)
+    updated=0; self_updated=0
+    for f in "$src"/*; do
+      [ -f "$f" ] || continue
+      name=$(basename "$f")
+      if ! cmp -s "$f" "./$name"; then
+        cp "$f" "./$name.new" && mv "./$name.new" "./$name"   # mv — чтобы безопасно заменить и этот скрипт
+        updated=1
+        [ "$name" = "start-bot.command" ] && self_updated=1
+      fi
+    done
+    chmod +x ./start-bot.command
+    if [ "$updated" = 1 ]; then echo "Бот обновлён до свежей версии."; else echo "У вас самая свежая версия."; fi
+  else
+    echo "Не удалось проверить обновления (нет интернета?) — запускаю текущую версию."
+    self_updated=0
+  fi
+  [ -n "$tmp" ] && [ -d "$tmp" ] && rm -r "$tmp"
+  if [ "$self_updated" = 1 ]; then
+    # Обновился сам скрипт запуска — перезапускаем его уже новой версией.
+    BOT_JUST_UPDATED=1 exec bash "./start-bot.command"
+  fi
+fi
+
 # 1. Проверяем Python
 if ! command -v python3 >/dev/null 2>&1 || ! python3 -c 'import sys; sys.exit(0 if sys.version_info >= (3, 10) else 1)' 2>/dev/null; then
   echo "Не нашёл Python версии 3.10 или новее."
@@ -39,6 +70,8 @@ if [ ! -s "$ENV_FILE" ]; then
   done
 fi
 touch "$ENV_FILE"; chmod 600 "$ENV_FILE"
+# Ваш файл настроек (стиль, расписание) живёт рядом с токенами, чтобы обновления его не затирали.
+[ -f "$DATA_DIR/settings.json" ] || cp settings.json "$DATA_DIR/settings.json"
 # Если в .env когда-то попал мусор — оставляем только правильные строки.
 LC_ALL=C grep -E '^(TELEGRAM_BOT_TOKEN|ANTHROPIC_API_KEY|ANTHROPIC_BASE_URL|CHANNEL_ID|OWNER_ID|DISCUSSION_CHAT_ID)=[A-Za-z0-9:_@./-]+$' "$ENV_FILE" > "$ENV_FILE.clean"
 mv "$ENV_FILE.clean" "$ENV_FILE"; chmod 600 "$ENV_FILE"
