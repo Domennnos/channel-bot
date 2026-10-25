@@ -41,6 +41,8 @@ def _env(name: str) -> str:
 
 TELEGRAM_BOT_TOKEN = _env("TELEGRAM_BOT_TOKEN")
 ANTHROPIC_API_KEY = _env("ANTHROPIC_API_KEY")
+# Если ключ от посредника (а не напрямую от Anthropic) — здесь адрес его сервера. Обычно пусто.
+ANTHROPIC_BASE_URL = _env("ANTHROPIC_BASE_URL")
 CHANNEL_ID = _env("CHANNEL_ID")  # @имя или число вроде -1001234567890
 OWNER_ID = int(_env("OWNER_ID")) if _env("OWNER_ID").lstrip("-").isdigit() else None
 DISCUSSION_CHAT_ID = (

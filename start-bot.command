@@ -24,7 +24,7 @@ pip install -q -r requirements.txt || { echo "Не получилось уста
 # 3. Если в файле .env чего-то нет — спрашиваем (символы при вводе не видны, это нормально)
 touch .env; chmod 600 .env
 # Если в .env когда-то попал мусор — оставляем только правильные строки.
-LC_ALL=C grep -E '^(TELEGRAM_BOT_TOKEN|ANTHROPIC_API_KEY|CHANNEL_ID|OWNER_ID|DISCUSSION_CHAT_ID)=[A-Za-z0-9:_@.-]+$' .env > .env.clean
+LC_ALL=C grep -E '^(TELEGRAM_BOT_TOKEN|ANTHROPIC_API_KEY|ANTHROPIC_BASE_URL|CHANNEL_ID|OWNER_ID|DISCUSSION_CHAT_ID)=[A-Za-z0-9:_@./-]+$' .env > .env.clean
 mv .env.clean .env; chmod 600 .env
 ask() {  # имя  подсказка  [необязательно]
   if grep -q "^$1=." .env; then return; fi

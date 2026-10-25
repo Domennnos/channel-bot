@@ -34,7 +34,11 @@ def _получить_клиента() -> anthropic.Anthropic:
     global _клиент
     if _клиент is None:
         # Ключ берём явно из .env; в логи он не попадает.
-        _клиент = anthropic.Anthropic(api_key=config.ANTHROPIC_API_KEY, max_retries=2, timeout=120.0)
+        _клиент = anthropic.Anthropic(
+            api_key=config.ANTHROPIC_API_KEY,
+            base_url=config.ANTHROPIC_BASE_URL or None,  # None = обычный адрес Anthropic
+            max_retries=2, timeout=120.0,
+        )
     return _клиент
 
 
