@@ -6,7 +6,7 @@
 import json
 import os
 import sys
-from datetime import time
+from datetime import datetime, time, timedelta
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
@@ -88,3 +88,15 @@ def время_из_строки(текст: str, часовой_пояс: str) 
 def дни_из_списка(дни: list[str]) -> tuple[int, ...]:
     """['вт', 'пт'] -> (2, 5)."""
     return tuple(ДНИ_НЕДЕЛИ[д.strip().lower()] for д in дни)
+
+
+def последний_срок(дни: tuple[int, ...], время: time) -> datetime | None:
+    """Последний момент по расписанию, который уже наступил (не раньше чем за неделю)."""
+    сейчас = datetime.now(время.tzinfo)
+    for назад in range(8):
+        день = (сейчас - timedelta(days=назад)).date()
+        if (день.weekday() + 1) % 7 in дни:  # у нас 0 = воскресенье, у Python 0 = понедельник
+            срок = datetime.combine(день, время.replace(tzinfo=None), время.tzinfo)
+            if срок <= сейчас:
+                return срок
+    return None

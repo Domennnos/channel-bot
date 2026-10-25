@@ -69,6 +69,10 @@ def создать_таблицы() -> None:
                 used INTEGER NOT NULL DEFAULT 0,
                 created_at TEXT NOT NULL
             );
+            CREATE TABLE IF NOT EXISTS state (          -- служебные отметки (например, когда был последний отчёт)
+                key TEXT PRIMARY KEY,
+                value TEXT NOT NULL
+            );
             CREATE TABLE IF NOT EXISTS usage (
                 day TEXT PRIMARY KEY,
                 requests INTEGER NOT NULL DEFAULT 0,
@@ -281,3 +285,24 @@ def расход_за_30_дней() -> float:
     with _подключение() as c:
         r = c.execute("SELECT COALESCE(SUM(cost), 0) AS s FROM usage WHERE day >= ?", (граница,)).fetchone()
     return r["s"]
+
+
+# ---------- Служебные отметки (чтобы бот мог «догонять» пропущенное) ----------
+
+def отметка(ключ: str) -> datetime | None:
+    """Когда в последний раз было событие с этим именем (или None)."""
+    with _подключение() as c:
+        r = c.execute("SELECT value FROM state WHERE key = ?", (ключ,)).fetchone()
+    return datetime.fromisoformat(r["value"]) if r else None
+
+
+def записать_отметку(ключ: str) -> None:
+    with _подключение() as c:
+        c.execute("INSERT OR REPLACE INTO state (key, value) VALUES (?, ?)", (ключ, _сейчас()))
+
+
+def последний_черновик_бота() -> datetime | None:
+    """Когда бот в последний раз создавал черновик (любой: по расписанию или по вашей команде)."""
+    with _подключение() as c:
+        r = c.execute("SELECT MAX(created_at) AS m FROM posts WHERE source = 'bot'").fetchone()
+    return datetime.fromisoformat(r["m"]) if r and r["m"] else None
