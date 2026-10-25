@@ -21,6 +21,7 @@ from telegram import (
     ReactionTypeEmoji,
     Update,
 )
+from telegram.error import NetworkError
 from telegram.ext import (
     Application,
     CallbackQueryHandler,
@@ -167,6 +168,10 @@ async def опубликовать(context, post_id: int) -> None:
     db.отметить_опубликованным(post_id, сообщение.message_id)
 
 
+# Черновики, с которыми бот прямо сейчас что-то делает (защита от двойного нажатия).
+_в_работе: set[int] = set()
+
+
 async def нажатие_кнопки_черновика(update: Update, context: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query
     if q.from_user.id != config.OWNER_ID:
@@ -178,25 +183,36 @@ async def нажатие_кнопки_черновика(update: Update, context
     if not пост or пост["status"] != "draft":
         await q.answer("Этот черновик уже обработан.", show_alert=True)
         return
+    if post_id in _в_работе:
+        await q.answer("Уже выполняю, подождите немного…")
+        return
 
-    if действие == "pub":
-        try:
-            await опубликовать(context, post_id)
-        except Exception as e:  # чаще всего — бот не админ канала или неверный CHANNEL_ID
-            log.error("Не удалось опубликовать: %s", type(e).__name__)
-            await q.answer("Не получилось опубликовать. Проверьте, что бот — админ канала.", show_alert=True)
-            return
-        await q.answer("Опубликовано!")
-        await q.edit_message_text(f"{пост['text']}\n\n— — —\n✅ Опубликовано в канале.")
+    _в_работе.add(post_id)
+    try:
+        if действие == "pub":
+            await q.answer("Публикую…")  # отвечаем на нажатие сразу, чтобы кнопка «отжалась»
+            try:
+                await опубликовать(context, post_id)
+            except Exception as e:  # чаще всего — бот не админ канала, неверный CHANNEL_ID или медленная сеть
+                log.error("Не удалось опубликовать: %s: %s", type(e).__name__, str(e)[:200])
+                await _написать_владельцу(
+                    context,
+                    f"⚠️ Не получилось опубликовать черновик №{post_id} ({type(e).__name__}).\n"
+                    "Проверьте, что бот — администратор канала с правом публикации, и нажмите кнопку ещё раз.",
+                )
+                return
+            await q.edit_message_text(f"{пост['text']}\n\n— — —\n✅ Опубликовано в канале.")
 
-    elif действие == "rej":
-        db.отметить_отклонённым(post_id)
-        await q.answer("Отклонено.")
-        await q.edit_message_text(f"{пост['text']}\n\n— — —\n❌ Отклонено.")
+        elif действие == "rej":
+            db.отметить_отклонённым(post_id)
+            await q.answer("Отклонено.")
+            await q.edit_message_text(f"{пост['text']}\n\n— — —\n❌ Отклонено.")
 
-    elif действие == "rew":
-        await q.answer("Переписываю…")
-        await сделать_черновик(context, post_id=post_id, редактируемое_сообщение=q.message)
+        elif действие == "rew":
+            await q.answer("Переписываю… это займёт 1–2 минуты.")
+            await сделать_черновик(context, post_id=post_id, редактируемое_сообщение=q.message)
+    finally:
+        _в_работе.discard(post_id)
 
 
 # ======================================================================
@@ -555,6 +571,12 @@ async def догнать_пропущенное(context: ContextTypes.DEFAULT_TY
 async def ошибка(update, context: ContextTypes.DEFAULT_TYPE):
     """Любая непредвиденная ошибка: пишем в журнал только тип ошибки (без секретов)."""
     log.error("Ошибка в боте: %s: %s", type(context.error).__name__, str(context.error)[:200])
+    # Если ошибка случилась при вашем действии (а не просто сеть моргнула) — коротко сообщаем вам.
+    if update is not None and not isinstance(context.error, NetworkError) and config.OWNER_ID:
+        try:
+            await _написать_владельцу(context, f"⚠️ Что-то пошло не так: {type(context.error).__name__}. Попробуйте ещё раз.")
+        except Exception:
+            pass
 
 
 # ======================================================================
@@ -581,7 +603,17 @@ def собрать_приложение() -> Application:
     db.создать_таблицы()
     настройки = config.загрузить_настройки()
 
-    app = Application.builder().token(config.TELEGRAM_BOT_TOKEN).post_init(после_запуска).build()
+    app = (
+        Application.builder()
+        .token(config.TELEGRAM_BOT_TOKEN)
+        .post_init(после_запуска)
+        # Обрабатываем сообщения и кнопки параллельно: пока ИИ думает, кнопки продолжают работать.
+        .concurrent_updates(True)
+        # Связь с Telegram бывает медленной — ждём ответа подольше, чтобы не ловить «тайм-аут».
+        .connect_timeout(30).read_timeout(60).write_timeout(60).pool_timeout(30)
+        .get_updates_connect_timeout(30).get_updates_read_timeout(60)
+        .build()
+    )
 
     # Команды (только для владельца — проверка внутри каждой)
     for имя, функция in [
