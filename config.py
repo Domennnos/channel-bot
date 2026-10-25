@@ -14,12 +14,13 @@ from dotenv import load_dotenv
 
 # Папка, где лежит бот. Все файлы (настройки, база данных) ищем рядом с кодом.
 BASE_DIR = Path(__file__).resolve().parent
-SETTINGS_PATH = BASE_DIR / "settings.json"
 
 # Папка для данных, которые должны пережить перезапуск сервера (база, переключатели режимов).
 # На хостинге сюда подключают постоянный диск (Volume) и задают DATA_DIR=/data.
 DATA_DIR = Path(os.environ.get("DATA_DIR", "") or BASE_DIR)
 DATA_DIR.mkdir(parents=True, exist_ok=True)
+# Ваши настройки лежат в DATA_DIR (так их не затрёт обновление бота); если там файла нет — берём образец из папки бота.
+SETTINGS_PATH = DATA_DIR / "settings.json" if (DATA_DIR / "settings.json").exists() else BASE_DIR / "settings.json"
 DB_PATH = DATA_DIR / "bot_data.db"
 RUNTIME_PATH = DATA_DIR / "runtime.json"  # сюда пишутся только то, что вы меняете командами в боте
 
