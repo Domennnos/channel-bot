@@ -41,6 +41,7 @@ ask() {  # имя  подсказка  [необязательно]
 ask TELEGRAM_BOT_TOKEN "Вставьте токен бота от BotFather и нажмите Enter"
 ask ANTHROPIC_API_KEY  "Вставьте ключ Anthropic (sk-ant-…) и нажмите Enter"
 ask CHANNEL_ID         "Вставьте адрес канала, например @mychannel, и нажмите Enter"
+ask ANTHROPIC_BASE_URL     "Адрес сервера ИИ (если ключ от посредника, например https://api.getapi.trade). Если ключ напрямую от Anthropic — впишите - и Enter"
 ask OWNER_ID           "Ваш Telegram-ID (число). Если ещё не знаете — просто Enter" необязательно
 
 # 4. Запускаем. caffeinate не даёт Mac уснуть, пока бот работает.

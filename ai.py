@@ -68,18 +68,30 @@ def спросить(система: str, запрос: str, *, макс_ток�
     _проверить_лимиты(настройки)
     модель = настройки["ии"]["модель"]
 
+    параметры = dict(
+        model=модель,
+        max_tokens=макс_токенов,  # жёсткий потолок длины ответа — тоже защита от трат
+        system=система,
+        messages=[{"role": "user", "content": запрос}],
+        # «усилие» — насколько долго модель думает; low = дешевле и быстрее, для постов хватает
+        output_config={"effort": настройки["ии"].get("усилие_размышления", "low")},
+    )
     try:
-        ответ = _получить_клиента().messages.create(
-            model=модель,
-            max_tokens=макс_токенов,  # жёсткий потолок длины ответа — тоже защита от трат
-            system=система,
-            messages=[{"role": "user", "content": запрос}],
-            # «усилие» — насколько долго модель думает; low = дешевле и быстрее, для постов хватает
-            output_config={"effort": настройки["ии"].get("усилие_размышления", "low")},
-        )
+        try:
+            ответ = _получить_клиента().messages.create(**параметры)
+        except anthropic.BadRequestError as e:
+            # Некоторые посредники не знают параметр «усилие» — пробуем ещё раз без него.
+            if "output_config" not in str(e) and "effort" not in str(e).lower():
+                raise
+            параметры.pop("output_config")
+            ответ = _получить_клиента().messages.create(**параметры)
+    except anthropic.AuthenticationError as e:
+        raise ОшибкаИИ("Ключ ИИ не принят (AuthenticationError). Проверьте ключ и адрес сервера (ANTHROPIC_BASE_URL).") from e
+    except anthropic.APIStatusError as e:
+        # Показываем код и короткое пояснение сервера — ключа в них нет.
+        raise ОшибкаИИ(f"ИИ вернул ошибку {e.status_code}: {str(e.message)[:200]}") from e
     except anthropic.APIError as e:
-        # Текст ошибки может быть полезен, но ключ в нём не содержится.
-        raise ОшибкаИИ(f"Не удалось связаться с Claude: {type(e).__name__}") from e
+        raise ОшибкаИИ(f"Не удалось связаться с ИИ: {type(e).__name__}") from e
 
     # Записываем расход сразу после ответа (даже если ответ окажется пустым).
     db.записать_расход(_стоимость(модель, ответ.usage))
