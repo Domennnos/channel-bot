@@ -245,25 +245,33 @@ def _контекст_для_ии() -> tuple[list[str], list[str]]:
 
 async def сделать_черновик(context, *, заметка: str | None = None, post_id: int | None = None,
                            правки: str | None = None, редактируемое_сообщение=None,
-                           медиа: tuple[str, str] | None = None) -> int | None:
+                           медиа: tuple[str, str] | None = None, idea_id: int | None = None) -> int | None:
     """
     Просит Claude написать пост (или переписать черновик) и показывает его вам.
     Если режим «авто» — сразу публикует.
     """
     прошлые, лучшие = _контекст_для_ии()
-    черновик = db.получить_пост(post_id)["text"] if post_id else None
+    черновик = None
+    if post_id:
+        пост = db.получить_пост(post_id)
+        черновик = пост["text"]
+        if пост["idea_id"] and not заметка:
+            идея = db.получить_идею(пост["idea_id"])
+            заметка = идея["text"] if идея else None  # исходная мысль — чтобы при правках не уйти от темы
     try:
         текст = await asyncio.to_thread(
             ai.написать_пост, заметка=заметка, прошлые_посты=прошлые, лучшие_посты=лучшие,
             правки=правки, черновик=черновик,
         )
     except (ai.ЛимитИсчерпан, ai.ОшибкаИИ) as e:
+        if idea_id and post_id is None:
+            db.отметить_идею(idea_id, False)  # пост не получился — идея остаётся в копилке
         await _написать_владельцу(context, f"⚠️ {e}")
         return None
     текст = текст[:4000]
 
     if post_id is None:
-        post_id = db.добавить_черновик(текст)
+        post_id = db.добавить_черновик(текст, idea_id)
         if медиа:
             db.прикрепить_медиа(post_id, *медиа)
     else:
@@ -348,8 +356,12 @@ async def нажатие_кнопки_черновика(update: Update, context
 
         elif действие == "rej":
             db.отметить_отклонённым(post_id)
-            await q.answer("Отклонено.")
-            await q.edit_message_text(f"{пост['text']}\n\n— — —\n❌ Отклонено.")
+            приписка = ""
+            if пост["idea_id"] and db.получить_идею(пост["idea_id"]):
+                db.отметить_идею(пост["idea_id"], False)
+                приписка = " Идея вернулась в копилку (/ideas)."
+            await q.answer("Отклонено." + приписка)
+            await q.edit_message_text(f"{пост['text']}\n\n— — —\n❌ Отклонено.{приписка}")
 
         elif действие == "rew":
             await q.answer("Переписываю… это займёт 1–2 минуты.")
@@ -398,10 +410,11 @@ async def нажатие_кнопки_черновика(update: Update, context
 
 СПРАВКА = (
     "Я помогаю вести ваш канал. Что умею:\n\n"
-    "• Просто напишите мне заметку или тему — я сделаю по ней черновик поста.\n"
-    "• /post — черновик на свободную тему (или по вашей сохранённой идее).\n"
-    "• /idea текст — сохранить идею/заметку на будущее (возьму её для ближайшего поста).\n"
-    "• /ideas — список сохранённых идей.\n"
+    "• Просто напишите мне мысль — я спрошу: написать пост сейчас или сохранить в идеи.\n"
+    "• /post — выбрать идею кнопкой и написать пост строго по ней (или свободная тема).\n"
+    "• /post текст — сразу пост строго по этому тексту.\n"
+    "• /idea текст — сохранить идею на будущее.\n"
+    "• /ideas — список идей: написать пост по любой или удалить.\n"
     "• /stats — как зашли посты за неделю (реакции и комментарии).\n"
     "• /report — недельный отчёт с идеями прямо сейчас.\n"
     "• /report_all — отчёт за всё время ведения канала.\n"
@@ -419,15 +432,44 @@ async def команда_старт(update, context):
     await update.message.reply_text("Привет! 👋\n\n" + СПРАВКА)
 
 
+def _коротко(текст: str, длина: int) -> str:
+    текст = " ".join(текст.split())
+    return текст if len(текст) <= длина else текст[:длина - 1].rstrip() + "…"
+
+
+def _меню_идей(идеи) -> tuple[str, InlineKeyboardMarkup]:
+    """Список идей + кнопки «Пост по идее №…» (и «Свободная тема»)."""
+    идеи = идеи[:15]
+    текст = "По какой идее написать пост? 💡\n\n" + "\n\n".join(
+        f"{i}. {_коротко(x['text'], 300)}" for i, x in enumerate(идеи, 1)
+    )
+    кнопки = [[InlineKeyboardButton(f"✍️ {i}. {_коротко(x['text'], 28)}", callback_data=f"idea:{x['id']}")]
+              for i, x in enumerate(идеи, 1)]
+    кнопки.append([InlineKeyboardButton("🎲 Свободная тема", callback_data="free")])
+    return текст, InlineKeyboardMarkup(кнопки)
+
+
 async def команда_пост(update, context):
     if not await _только_владелец(update):
         return
-    заметка = " ".join(context.args).strip() or None
-    if заметка is None:
-        идея = db.взять_идею()
-        заметка = идея["text"] if идея else None
-    await update.message.reply_text("Пишу черновик, минутку… ✍️")
-    await сделать_черновик(context, заметка=заметка)
+    заметка = " ".join(context.args).strip()
+    if заметка:
+        # /post текст — пост строго по этому тексту (сохраняем его как идею, чтобы не потерялся)
+        idea_id = db.добавить_идею(заметка)
+        db.отметить_идею(idea_id, True)
+        await update.message.reply_text("Пишу черновик по вашей мысли, минутку… ✍️")
+        await сделать_черновик(context, заметка=заметка, idea_id=idea_id)
+        return
+    идеи = db.неиспользованные_идеи()
+    if идеи:
+        текст, кнопки = _меню_идей(идеи)
+        await update.message.reply_text(текст, reply_markup=кнопки)
+        return
+    await update.message.reply_text(
+        "Сохранённых идей нет — пишу на свободную тему, минутку… ✍️\n"
+        "(Чтобы пост был о вашем: просто напишите мне мысль или /idea текст.)"
+    )
+    await сделать_черновик(context)
 
 
 async def команда_идея(update, context):
@@ -448,7 +490,62 @@ async def команда_идеи(update, context):
     if not идеи:
         await update.message.reply_text("Сохранённых идей пока нет. Добавить: /idea текст")
         return
-    await update.message.reply_text("Ваши идеи в очереди:\n\n" + "\n".join(f"{i+1}. {x['text']}" for i, x in enumerate(идеи)))
+    текст, кнопки = _список_идей(идеи)
+    await update.message.reply_text(текст, reply_markup=кнопки)
+
+
+def _список_идей(идеи) -> tuple[str, InlineKeyboardMarkup]:
+    идеи = идеи[:15]
+    текст = "Ваши идеи 💡\n\n" + "\n\n".join(f"{i}. {_коротко(x['text'], 300)}" for i, x in enumerate(идеи, 1))
+    кнопки = [[InlineKeyboardButton(f"✍️ Пост по №{i}", callback_data=f"idea:{x['id']}"),
+               InlineKeyboardButton(f"🗑 Удалить №{i}", callback_data=f"idel:{x['id']}")]
+              for i, x in enumerate(идеи, 1)]
+    return текст, InlineKeyboardMarkup(кнопки)
+
+
+async def нажатие_кнопки_идеи(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Кнопки выбора идеи: написать пост по ней, удалить, сохранить, свободная тема."""
+    q = update.callback_query
+    if q.from_user.id != config.OWNER_ID:
+        await q.answer()
+        return
+    if q.data == "free":
+        await q.answer()
+        await q.edit_message_text("🎲 Пишу пост на свободную тему, минутку… ✍️")
+        await сделать_черновик(context)
+        return
+
+    действие, idea_id = q.data.split(":")
+    идея = db.получить_идею(int(idea_id))
+    if not идея:
+        await q.answer("Этой идеи уже нет.", show_alert=True)
+        return
+
+    if действие == "idea":
+        if идея["used"]:
+            await q.answer("По этой идее пост уже написан.", show_alert=True)
+            return
+        db.отметить_идею(идея["id"], True)  # сразу, чтобы двойное нажатие не дало два поста
+        await q.answer("Пишу пост по этой идее…")
+        await q.edit_message_text(f"✍️ Пишу пост по вашей мысли:\n«{_коротко(идея['text'], 500)}»\n\nМинутку…")
+        await сделать_черновик(context, заметка=идея["text"], idea_id=идея["id"])
+
+    elif действие == "keep":
+        await q.answer("Сохранил!")
+        await q.edit_message_text(
+            f"💡 Сохранил в идеи:\n«{_коротко(идея['text'], 500)}»\n\n"
+            "Когда захотите пост — нажмите /post и выберите её."
+        )
+
+    elif действие == "idel":
+        db.удалить_идею(идея["id"])
+        await q.answer("Удалил.")
+        идеи = db.неиспользованные_идеи()
+        if идеи:
+            текст, кнопки = _список_идей(идеи)
+            await q.edit_message_text(текст, reply_markup=кнопки)
+        else:
+            await q.edit_message_text("Идей больше нет. Добавить: просто напишите мне мысль или /idea текст.")
 
 
 def _сводка_постов(дней: int) -> str:
@@ -679,8 +776,15 @@ async def обычное_сообщение(update, context):
                 редактируемое_сообщение=сообщение.reply_to_message,
             )
             return
-    await сообщение.reply_text("Принял тему, пишу черновик… ✍️")
-    await сделать_черновик(context, заметка=сообщение.text)
+    # Новая мысль: сохраняем её в идеи и спрашиваем, писать пост сейчас или оставить на потом.
+    idea_id = db.добавить_идею(сообщение.text.strip())
+    await сообщение.reply_text(
+        "Что сделать с этой мыслью?",
+        reply_markup=InlineKeyboardMarkup([
+            [InlineKeyboardButton("✍️ Написать пост сейчас", callback_data=f"idea:{idea_id}")],
+            [InlineKeyboardButton("💡 Сохранить в идеи", callback_data=f"keep:{idea_id}")],
+        ]),
+    )
 
 
 async def медиа_сообщение(update, context):
@@ -890,7 +994,8 @@ async def нажатие_кнопки_ответа(update: Update, context):
 async def задание_черновик(context: ContextTypes.DEFAULT_TYPE):
     """Срабатывает в дни и время из settings.json: готовит пост."""
     идея = db.взять_идею()
-    await сделать_черновик(context, заметка=идея["text"] if идея else None)
+    await сделать_черновик(context, заметка=идея["text"] if идея else None,
+                           idea_id=идея["id"] if идея else None)
 
 
 async def задание_отчёт(context: ContextTypes.DEFAULT_TYPE):
@@ -1046,6 +1151,7 @@ def собрать_приложение() -> Application:
     # Кнопки
     app.add_handler(CallbackQueryHandler(нажатие_кнопки_черновика, pattern=r"^((pub|rew|rej|later|back|unsch|nomedia):\d+|at:\d+:\w+)$"))
     app.add_handler(CallbackQueryHandler(нажатие_кнопки_ответа, pattern=r"^(crp|crj):\d+$"))
+    app.add_handler(CallbackQueryHandler(нажатие_кнопки_идеи, pattern=r"^((idea|idel|keep):\d+|free)$"))
 
     # Обычные сообщения вам в личку
     app.add_handler(MessageHandler(filters.ChatType.PRIVATE & filters.TEXT & ~filters.COMMAND, обычное_сообщение))

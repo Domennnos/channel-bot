@@ -85,6 +85,8 @@ def создать_таблицы() -> None:
         if "scheduled_at" not in колонки:
             c.execute("ALTER TABLE posts ADD COLUMN scheduled_at TEXT")
         # …и колонки для прикреплённого видео/фото (тип и номер файла на серверах Telegram).
+        if "idea_id" not in колонки:  # по какой идее написан пост
+            c.execute("ALTER TABLE posts ADD COLUMN idea_id INTEGER")
         if "media_type" not in колонки:
             c.execute("ALTER TABLE posts ADD COLUMN media_type TEXT")
             c.execute("ALTER TABLE posts ADD COLUMN media_file_id TEXT")
@@ -92,11 +94,11 @@ def создать_таблицы() -> None:
 
 # ---------- Посты ----------
 
-def добавить_черновик(текст: str) -> int:
+def добавить_черновик(текст: str, idea_id: int | None = None) -> int:
     with _подключение() as c:
         cur = c.execute(
-            "INSERT INTO posts (text, status, source, created_at) VALUES (?, 'draft', 'bot', ?)",
-            (текст, _сейчас()),
+            "INSERT INTO posts (text, status, source, created_at, idea_id) VALUES (?, 'draft', 'bot', ?, ?)",
+            (текст, _сейчас(), idea_id),
         )
         return cur.lastrowid
 
@@ -312,6 +314,22 @@ def добавить_идею(текст: str) -> int:
 def неиспользованные_идеи() -> list:
     with _подключение() as c:
         return c.execute("SELECT * FROM ideas WHERE used = 0 ORDER BY id").fetchall()
+
+
+def получить_идею(idea_id: int):
+    with _подключение() as c:
+        return c.execute("SELECT * FROM ideas WHERE id = ?", (idea_id,)).fetchone()
+
+
+def отметить_идею(idea_id: int, использована: bool) -> None:
+    """Пометить идею использованной (или вернуть в копилку, если черновик отклонён)."""
+    with _подключение() as c:
+        c.execute("UPDATE ideas SET used = ? WHERE id = ?", (1 if использована else 0, idea_id))
+
+
+def удалить_идею(idea_id: int) -> None:
+    with _подключение() as c:
+        c.execute("DELETE FROM ideas WHERE id = ?", (idea_id,))
 
 
 def взять_идею():
