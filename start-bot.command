@@ -5,15 +5,19 @@ cd "$(dirname "$0")" || exit 1
 
 pause() { echo; read -r -p "Нажмите Enter, чтобы закрыть окно…" _; }
 
-# 0. Автообновление: скачиваем свежую версию бота с GitHub и обновляем файлы кода.
+# 0. Автообновление: берём свежую версию бота с GitHub и обновляем файлы кода.
 #    Токены, база и ваши настройки лежат в ~/channel-bot-data и не затрагиваются.
+#    Ждём не больше 10 секунд; если GitHub медленный — качаем в фоне, применим при следующем запуске.
 BOT_ZIP_URL="${BOT_ZIP_URL:-https://github.com/Domennnos/channel-bot/archive/refs/heads/main.zip}"
-if [ -z "$BOT_JUST_UPDATED" ]; then
-  echo "Проверяю обновления…"
+STAGE="$HOME/channel-bot-data/update"   # сюда фоновая загрузка кладёт скачанное обновление
+mkdir -p "$STAGE"
+self_updated=0
+
+apply_zip() {  # распаковывает архив $1 и заменяет изменившиеся файлы в папке бота
+  local tmp src f name updated=0
   tmp=$(mktemp -d)
-  if curl -fsSL --max-time 60 "$BOT_ZIP_URL" -o "$tmp/bot.zip" 2>/dev/null && unzip -q "$tmp/bot.zip" -d "$tmp" 2>/dev/null; then
+  if unzip -q "$1" -d "$tmp" 2>/dev/null; then
     src=$(find "$tmp" -mindepth 1 -maxdepth 1 -type d | head -n 1)
-    updated=0; self_updated=0
     for f in "$src"/*; do
       [ -f "$f" ] || continue
       name=$(basename "$f")
@@ -24,12 +28,27 @@ if [ -z "$BOT_JUST_UPDATED" ]; then
       fi
     done
     chmod +x ./start-bot.command
-    if [ "$updated" = 1 ]; then echo "Бот обновлён до свежей версии."; else echo "У вас самая свежая версия."; fi
-  else
-    echo "Не удалось проверить обновления (нет интернета?) — запускаю текущую версию."
-    self_updated=0
   fi
   [ -n "$tmp" ] && [ -d "$tmp" ] && rm -r "$tmp"
+  if [ "$updated" = 1 ]; then echo "Бот обновлён до свежей версии."; else echo "У вас самая свежая версия."; fi
+}
+
+if [ -z "$BOT_JUST_UPDATED" ]; then
+  if [ -s "$STAGE/bot.zip" ]; then
+    # В прошлый раз обновление скачалось в фоне — применяем его мгновенно.
+    apply_zip "$STAGE/bot.zip"
+    rm -f "$STAGE/bot.zip"
+  else
+    echo "Проверяю обновления (до 10 секунд)…"
+    if curl -fsSL --connect-timeout 5 --max-time 10 "$BOT_ZIP_URL" -o "$STAGE/quick.zip" 2>/dev/null; then
+      apply_zip "$STAGE/quick.zip"
+    else
+      echo "GitHub отвечает медленно — запускаю бота сразу, обновление скачаю в фоне (применится при следующем запуске)."
+      ( curl -fsSL --connect-timeout 20 --max-time 600 "$BOT_ZIP_URL" -o "$STAGE/bot.zip.part" \
+          && mv "$STAGE/bot.zip.part" "$STAGE/bot.zip" ) >/dev/null 2>&1 &
+    fi
+    rm -f "$STAGE/quick.zip"
+  fi
   if [ "$self_updated" = 1 ]; then
     # Обновился сам скрипт запуска — перезапускаем его уже новой версией.
     BOT_JUST_UPDATED=1 exec bash "./start-bot.command"
