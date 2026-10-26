@@ -16,7 +16,8 @@ self_updated=0
 apply_zip() {  # распаковывает архив $1 и заменяет изменившиеся файлы в папке бота
   local tmp src f name updated=0
   tmp=$(mktemp -d)
-  if unzip -q "$1" -d "$tmp" 2>/dev/null; then
+  # Распаковываем силами Python (системный unzip на Mac иногда зависает на русских именах файлов).
+  if python3 -I -c 'import sys, zipfile; zipfile.ZipFile(sys.argv[1]).extractall(sys.argv[2])' "$1" "$tmp" </dev/null 2>/dev/null; then
     src=$(find "$tmp" -mindepth 1 -maxdepth 1 -type d | head -n 1)
     for f in "$src"/*; do
       [ -f "$f" ] || continue
