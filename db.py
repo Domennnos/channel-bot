@@ -84,6 +84,10 @@ def создать_таблицы() -> None:
         колонки = [r["name"] for r in c.execute("PRAGMA table_info(posts)")]
         if "scheduled_at" not in колонки:
             c.execute("ALTER TABLE posts ADD COLUMN scheduled_at TEXT")
+        # …и колонки для прикреплённого видео/фото (тип и номер файла на серверах Telegram).
+        if "media_type" not in колонки:
+            c.execute("ALTER TABLE posts ADD COLUMN media_type TEXT")
+            c.execute("ALTER TABLE posts ADD COLUMN media_file_id TEXT")
 
 
 # ---------- Посты ----------
@@ -120,6 +124,20 @@ def пост_по_сообщению_канала(channel_msg_id: int):
 def обновить_текст(post_id: int, текст: str) -> None:
     with _подключение() as c:
         c.execute("UPDATE posts SET text = ? WHERE id = ?", (текст, post_id))
+
+
+def прикрепить_медиа(post_id: int, тип: str | None, file_id: str | None) -> None:
+    """Прикрепить к посту видео/фото (или убрать, если передать None)."""
+    with _подключение() as c:
+        c.execute("UPDATE posts SET media_type = ?, media_file_id = ? WHERE id = ?", (тип, file_id, post_id))
+
+
+def последний_черновик():
+    """Самый свежий черновик (в том числе запланированный) — к нему прикрепляем видео без ответа."""
+    with _подключение() as c:
+        return c.execute(
+            "SELECT * FROM posts WHERE status IN ('draft', 'scheduled') ORDER BY id DESC LIMIT 1"
+        ).fetchone()
 
 
 def запомнить_сообщение_черновика(post_id: int, msg_id: int) -> None:

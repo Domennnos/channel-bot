@@ -96,7 +96,17 @@ def _кнопки_черновика(post_id: int) -> InlineKeyboardMarkup:
             InlineKeyboardButton("⏰ Позже", callback_data=f"later:{post_id}"),
             InlineKeyboardButton("❌ Отклонить", callback_data=f"rej:{post_id}"),
         ],
+        *_ряд_убрать_медиа(post_id),
     ])
+
+
+def _ряд_убрать_медиа(post_id: int) -> list:
+    """Кнопка «Убрать видео» — только если к посту что-то прикреплено."""
+    пост = db.получить_пост(post_id)
+    if not пост or not пост["media_type"]:
+        return []
+    название = НАЗВАНИЯ_МЕДИА.get(пост["media_type"], "вложение")
+    return [[InlineKeyboardButton(f"🗑 Убрать {название}", callback_data=f"nomedia:{post_id}")]]
 
 
 def _пояс() -> ZoneInfo:
@@ -147,7 +157,7 @@ def _когда_по_местному(когда: datetime | str) -> str:
 
 def _текст_запланированного(post_id: int, текст: str, когда) -> str:
     return (
-        f"{текст}\n\n— — —\n⏰ Запланировано на {_когда_по_местному(когда)} (черновик №{post_id}). "
+        f"{текст}\n\n— — —\n{_строка_медиа(post_id)}⏰ Запланировано на {_когда_по_местному(когда)} (черновик №{post_id}). "
         "Mac в это время должен быть включён, а бот — запущен."
     )
 
@@ -194,10 +204,23 @@ def разобрать_время(текст: str) -> tuple[datetime | None, str
 )
 
 
+# Как называем вложения по-русски
+НАЗВАНИЯ_МЕДИА = {"video": "видео", "photo": "фото", "animation": "GIF", "document": "файл"}
+ЛИМИТ_ПОДПИСИ = 1024  # столько символов Telegram разрешает в подписи под видео/фото
+
+
+def _строка_медиа(post_id: int) -> str:
+    пост = db.получить_пост(post_id)
+    if пост and пост["media_type"]:
+        return f"📎 Прикреплено {НАЗВАНИЯ_МЕДИА.get(пост['media_type'], 'вложение')}.\n"
+    return ""
+
+
 def _текст_черновика(post_id: int, текст: str) -> str:
     return (
-        f"{текст}\n\n— — —\nЧерновик №{post_id}. Нажмите кнопку ниже. "
-        "Чтобы поправить, ответьте на это сообщение, что изменить."
+        f"{текст}\n\n— — —\n{_строка_медиа(post_id)}Черновик №{post_id}. Нажмите кнопку ниже. "
+        "Чтобы поправить, ответьте на это сообщение, что изменить. "
+        "Чтобы добавить видео или фото — ответьте на это сообщение видео или фото."
     )
 
 
@@ -221,7 +244,8 @@ def _контекст_для_ии() -> tuple[list[str], list[str]]:
 # ======================================================================
 
 async def сделать_черновик(context, *, заметка: str | None = None, post_id: int | None = None,
-                           правки: str | None = None, редактируемое_сообщение=None) -> int | None:
+                           правки: str | None = None, редактируемое_сообщение=None,
+                           медиа: tuple[str, str] | None = None) -> int | None:
     """
     Просит Claude написать пост (или переписать черновик) и показывает его вам.
     Если режим «авто» — сразу публикует.
@@ -240,6 +264,8 @@ async def сделать_черновик(context, *, заметка: str | None
 
     if post_id is None:
         post_id = db.добавить_черновик(текст)
+        if медиа:
+            db.прикрепить_медиа(post_id, *медиа)
     else:
         db.обновить_текст(post_id, текст)
 
@@ -261,10 +287,25 @@ async def сделать_черновик(context, *, заметка: str | None
     return post_id
 
 
+async def _отправить_медиа(bot, chat_id, тип: str, file_id: str, подпись: str | None):
+    """Отправляет видео/фото/GIF/файл по его номеру на серверах Telegram (заново ничего не загружаем)."""
+    способ = getattr(bot, {"video": "send_video", "photo": "send_photo",
+                           "animation": "send_animation", "document": "send_document"}[тип])
+    return await способ(chat_id, file_id, caption=подпись)
+
+
 async def опубликовать(context, post_id: int) -> None:
-    """Отправляет текст черновика в канал и запоминает номер сообщения."""
+    """Отправляет пост в канал (с видео/фото, если прикреплено) и запоминает номер сообщения."""
     пост = db.получить_пост(post_id)
-    сообщение = await context.bot.send_message(_канал(), пост["text"])
+    if not пост["media_type"]:
+        сообщение = await context.bot.send_message(_канал(), пост["text"])
+    elif len(пост["text"]) <= ЛИМИТ_ПОДПИСИ:
+        # Обычный случай: видео и текст под ним одним сообщением.
+        сообщение = await _отправить_медиа(context.bot, _канал(), пост["media_type"], пост["media_file_id"], пост["text"])
+    else:
+        # Текст длиннее, чем помещается в подпись: сначала видео, сразу за ним — текст.
+        await _отправить_медиа(context.bot, _канал(), пост["media_type"], пост["media_file_id"], None)
+        сообщение = await context.bot.send_message(_канал(), пост["text"])
     db.отметить_опубликованным(post_id, сообщение.message_id)
 
 
@@ -313,6 +354,12 @@ async def нажатие_кнопки_черновика(update: Update, context
         elif действие == "rew":
             await q.answer("Переписываю… это займёт 1–2 минуты.")
             await сделать_черновик(context, post_id=post_id, редактируемое_сообщение=q.message)
+
+        elif действие == "nomedia":
+            db.прикрепить_медиа(post_id, None, None)
+            await q.answer("Убрал вложение.")
+            await q.edit_message_text(_текст_черновика(post_id, пост["text"]),
+                                      reply_markup=_кнопки_черновика(post_id))
 
         elif действие == "later":
             await q.answer("Когда опубликовать?")
@@ -636,6 +683,83 @@ async def обычное_сообщение(update, context):
     await сделать_черновик(context, заметка=сообщение.text)
 
 
+async def медиа_сообщение(update, context):
+    """
+    Вы прислали видео/фото/GIF/файл:
+      • ответом на черновик — прикрепляем к этому черновику (подпись = правки к тексту);
+      • с подписью, но не ответом — пишем по подписи новый пост и прикрепляем к нему;
+      • без подписи и не ответом — прикрепляем к самому свежему черновику.
+    """
+    if not await _только_владелец(update):
+        return
+    м = update.message
+    if м.video:
+        тип, file_id = "video", м.video.file_id
+    elif м.photo:
+        тип, file_id = "photo", м.photo[-1].file_id  # последняя — самого лучшего качества
+    elif м.animation:
+        тип, file_id = "animation", м.animation.file_id
+    elif м.document:
+        тип, file_id = "document", м.document.file_id
+    else:
+        return
+    название = НАЗВАНИЯ_МЕДИА[тип]
+    подпись = (м.caption or "").strip()
+
+    # 1) Ответ на черновик
+    if м.reply_to_message:
+        пост = db.пост_по_сообщению_черновика(м.reply_to_message.message_id)
+        if not пост:
+            await м.reply_text("Это сообщение не черновик (или он уже опубликован). Ответьте видео на актуальный черновик.")
+            return
+        db.прикрепить_медиа(пост["id"], тип, file_id)
+        if подпись:
+            await м.reply_text(f"Прикрепил {название} и переделываю текст по вашей подписи… ✍️")
+            await сделать_черновик(context, post_id=пост["id"], правки=подпись,
+                                   редактируемое_сообщение=м.reply_to_message)
+        else:
+            await _обновить_черновик(context, пост["id"])
+            await м.reply_text(f"📎 Прикрепил {название} к черновику №{пост['id']}.")
+        return
+
+    # 2) С подписью — новый пост по подписи
+    if подпись:
+        await м.reply_text(f"Пишу пост по вашей подписи и прикреплю {название}… ✍️")
+        await сделать_черновик(context, заметка=подпись, медиа=(тип, file_id))
+        return
+
+    # 3) Без подписи — к самому свежему черновику
+    пост = db.последний_черновик()
+    if not пост:
+        await м.reply_text(
+            f"Не к чему прикрепить {название}: черновиков нет.\n"
+            "Отправьте его с подписью — я напишу по ней пост, или сначала сделайте черновик командой /post."
+        )
+        return
+    db.прикрепить_медиа(пост["id"], тип, file_id)
+    await _обновить_черновик(context, пост["id"])
+    await м.reply_text(
+        f"📎 Прикрепил {название} к последнему черновику №{пост['id']} "
+        f"(«{пост['text'][:40].strip()}…»).\nЕсли не туда — нажмите «🗑 Убрать» под черновиком."
+    )
+
+
+async def _обновить_черновик(context, post_id: int) -> None:
+    """Перерисовывает сообщение с черновиком (текст + кнопки), например после прикрепления видео."""
+    пост = db.получить_пост(post_id)
+    if пост["status"] == "scheduled":
+        текст = _текст_запланированного(post_id, пост["text"], пост["scheduled_at"])
+        кнопки = _кнопки_запланированного(post_id)
+    else:
+        текст, кнопки = _текст_черновика(post_id, пост["text"]), _кнопки_черновика(post_id)
+    try:
+        await context.bot.edit_message_text(текст, chat_id=config.OWNER_ID,
+                                            message_id=пост["draft_chat_msg_id"], reply_markup=кнопки)
+    except Exception:
+        новое = await _написать_владельцу(context, текст, reply_markup=кнопки)
+        db.запомнить_сообщение_черновика(post_id, новое.message_id)
+
+
 # ======================================================================
 #          Слежение за каналом: посты, реакции, комментарии
 # ======================================================================
@@ -920,11 +1044,15 @@ def собрать_приложение() -> Application:
         app.add_handler(CommandHandler(имя, функция))
 
     # Кнопки
-    app.add_handler(CallbackQueryHandler(нажатие_кнопки_черновика, pattern=r"^((pub|rew|rej|later|back|unsch):\d+|at:\d+:\w+)$"))
+    app.add_handler(CallbackQueryHandler(нажатие_кнопки_черновика, pattern=r"^((pub|rew|rej|later|back|unsch|nomedia):\d+|at:\d+:\w+)$"))
     app.add_handler(CallbackQueryHandler(нажатие_кнопки_ответа, pattern=r"^(crp|crj):\d+$"))
 
     # Обычные сообщения вам в личку
     app.add_handler(MessageHandler(filters.ChatType.PRIVATE & filters.TEXT & ~filters.COMMAND, обычное_сообщение))
+    app.add_handler(MessageHandler(
+        filters.ChatType.PRIVATE & (filters.VIDEO | filters.PHOTO | filters.ANIMATION | filters.Document.ALL),
+        медиа_сообщение,
+    ))
 
     # Слежение за каналом и обсуждением
     app.add_handler(MessageHandler(filters.UpdateType.CHANNEL_POST, новый_пост_в_канале))
