@@ -12,6 +12,7 @@ Telegram-бот-помощник для ведения вашего канала
 """
 import asyncio
 import logging
+import re
 from datetime import datetime, timedelta, timezone
 from zoneinfo import ZoneInfo
 
@@ -91,8 +92,106 @@ def _кнопки_черновика(post_id: int) -> InlineKeyboardMarkup:
             InlineKeyboardButton("✅ Опубликовать", callback_data=f"pub:{post_id}"),
             InlineKeyboardButton("🔄 Переписать", callback_data=f"rew:{post_id}"),
         ],
-        [InlineKeyboardButton("❌ Отклонить", callback_data=f"rej:{post_id}")],
+        [
+            InlineKeyboardButton("⏰ Позже", callback_data=f"later:{post_id}"),
+            InlineKeyboardButton("❌ Отклонить", callback_data=f"rej:{post_id}"),
+        ],
     ])
+
+
+def _пояс() -> ZoneInfo:
+    return ZoneInfo(config.загрузить_настройки()["расписание"]["часовой_пояс"])
+
+
+def _ближайшее(час: int, минута: int) -> tuple[datetime, str]:
+    """Ближайшее наступающее ЧЧ:ММ (сегодня, если ещё не прошло, иначе завтра) и подпись для кнопки."""
+    сейчас = datetime.now(_пояс())
+    когда = сейчас.replace(hour=час, minute=минута, second=0, microsecond=0)
+    if когда <= сейчас + timedelta(minutes=1):
+        return когда + timedelta(days=1), f"Завтра {час:02d}:{минута:02d}"
+    return когда, f"Сегодня {час:02d}:{минута:02d}"
+
+
+# Готовые варианты времени для кнопки «Позже»: ключ -> функция, возвращающая (когда, подпись)
+ВАРИАНТЫ_ВРЕМЕНИ = {
+    "h1": lambda: (datetime.now(_пояс()).replace(second=0, microsecond=0) + timedelta(hours=1), "Через 1 час"),
+    "h3": lambda: (datetime.now(_пояс()).replace(second=0, microsecond=0) + timedelta(hours=3), "Через 3 часа"),
+    "t10": lambda: _ближайшее(10, 0),
+    "t1830": lambda: _ближайшее(18, 30),
+}
+
+
+def _кнопки_времени(post_id: int) -> InlineKeyboardMarkup:
+    def кнопка(ключ):
+        return InlineKeyboardButton(ВАРИАНТЫ_ВРЕМЕНИ[ключ]()[1], callback_data=f"at:{post_id}:{ключ}")
+    return InlineKeyboardMarkup([
+        [кнопка("h1"), кнопка("h3")],
+        [кнопка("t10"), кнопка("t1830")],
+        [InlineKeyboardButton("✍️ Своё время", callback_data=f"at:{post_id}:own")],
+        [InlineKeyboardButton("← Назад", callback_data=f"back:{post_id}")],
+    ])
+
+
+def _кнопки_запланированного(post_id: int) -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup([
+        [InlineKeyboardButton("🚀 Опубликовать сейчас", callback_data=f"pub:{post_id}")],
+        [InlineKeyboardButton("↩️ Отменить отправку", callback_data=f"unsch:{post_id}")],
+    ])
+
+
+def _когда_по_местному(когда: datetime | str) -> str:
+    if isinstance(когда, str):
+        когда = datetime.fromisoformat(когда)
+    return f"{когда.astimezone(_пояс()):%d.%m в %H:%M}"
+
+
+def _текст_запланированного(post_id: int, текст: str, когда) -> str:
+    return (
+        f"{текст}\n\n— — —\n⏰ Запланировано на {_когда_по_местному(когда)} (черновик №{post_id}). "
+        "Mac в это время должен быть включён, а бот — запущен."
+    )
+
+
+def разобрать_время(текст: str) -> tuple[datetime | None, str]:
+    """
+    Понимает: «21:00», «завтра 9:30», «28.10 19:30», «28.10.2026 19:30».
+    Возвращает (время, "") или (None, "почему не получилось").
+    """
+    пояс = _пояс()
+    сейчас = datetime.now(пояс)
+    т = текст.strip().lower().replace("в ", " ").replace("  ", " ").strip()
+    try:
+        if м := re.fullmatch(r"(\d{1,2})[:.](\d{2})", т):
+            когда = сейчас.replace(hour=int(м[1]), minute=int(м[2]), second=0, microsecond=0)
+            if когда <= сейчас:
+                когда += timedelta(days=1)  # это время сегодня уже прошло — значит, завтра
+        elif м := re.fullmatch(r"(сегодня|завтра|послезавтра) (\d{1,2})[:.](\d{2})", т):
+            сдвиг = {"сегодня": 0, "завтра": 1, "послезавтра": 2}[м[1]]
+            когда = (сейчас + timedelta(days=сдвиг)).replace(
+                hour=int(м[2]), minute=int(м[3]), second=0, microsecond=0)
+        elif м := re.fullmatch(r"(\d{1,2})\.(\d{1,2})(?:\.(\d{2,4}))? (\d{1,2})[:.](\d{2})", т):
+            год = int(м[3]) if м[3] else сейчас.year
+            if год < 100:
+                год += 2000
+            когда = datetime(год, int(м[2]), int(м[1]), int(м[4]), int(м[5]), tzinfo=пояс)
+            if not м[3] and когда < сейчас - timedelta(days=1):
+                когда = когда.replace(year=год + 1)  # «05.01» в декабре — это следующий год
+        else:
+            return None, "Не понял время."
+    except ValueError:
+        return None, "Такой даты или времени не бывает."
+    if когда <= сейчас:
+        return None, "Это время уже прошло."
+    if когда > сейчас + timedelta(days=60):
+        return None, "Слишком далеко — можно запланировать не больше чем на 60 дней вперёд."
+    return когда, ""
+
+
+ПОДСКАЗКА_ВРЕМЕНИ = (
+    "Напишите, когда опубликовать, например:\n"
+    "• 21:00\n• завтра 9:30\n• 28.10 19:30\n\n"
+    "Чтобы передумать, напишите «отмена»."
+)
 
 
 def _текст_черновика(post_id: int, текст: str) -> str:
@@ -178,10 +277,12 @@ async def нажатие_кнопки_черновика(update: Update, context
     if q.from_user.id != config.OWNER_ID:
         await q.answer()
         return
-    действие, post_id = q.data.split(":")
+    действие, post_id, *вариант = q.data.split(":")
     post_id = int(post_id)
     пост = db.получить_пост(post_id)
-    if not пост or пост["status"] != "draft":
+    # В каком состоянии пост должен быть, чтобы кнопка имела смысл
+    можно_когда = {"pub": ("draft", "scheduled"), "rej": ("draft", "scheduled"), "unsch": ("scheduled",)}
+    if not пост or пост["status"] not in можно_когда.get(действие, ("draft",)):
         await q.answer("Этот черновик уже обработан.", show_alert=True)
         return
     if post_id in _в_работе:
@@ -212,6 +313,34 @@ async def нажатие_кнопки_черновика(update: Update, context
         elif действие == "rew":
             await q.answer("Переписываю… это займёт 1–2 минуты.")
             await сделать_черновик(context, post_id=post_id, редактируемое_сообщение=q.message)
+
+        elif действие == "later":
+            await q.answer("Когда опубликовать?")
+            await q.edit_message_reply_markup(_кнопки_времени(post_id))
+
+        elif действие == "back":
+            await q.answer()
+            await q.edit_message_reply_markup(_кнопки_черновика(post_id))
+
+        elif действие == "at" and вариант == ["own"]:
+            context.user_data["ждём_время_для"] = post_id
+            await q.answer()
+            await _написать_владельцу(context, ПОДСКАЗКА_ВРЕМЕНИ)
+
+        elif действие == "at" and вариант and вариант[0] in ВАРИАНТЫ_ВРЕМЕНИ:
+            когда, _ = ВАРИАНТЫ_ВРЕМЕНИ[вариант[0]]()
+            db.запланировать(post_id, когда)
+            await q.answer(f"Запланировано на {_когда_по_местному(когда)}")
+            await q.edit_message_text(
+                _текст_запланированного(post_id, пост["text"], когда),
+                reply_markup=_кнопки_запланированного(post_id),
+            )
+
+        elif действие == "unsch":
+            db.снять_с_расписания(post_id)
+            await q.answer("Отправка отменена — это снова черновик.")
+            await q.edit_message_text(_текст_черновика(post_id, пост["text"]),
+                                      reply_markup=_кнопки_черновика(post_id))
     finally:
         _в_работе.discard(post_id)
 
@@ -229,6 +358,7 @@ async def нажатие_кнопки_черновика(update: Update, context
     "• /stats — как зашли посты за неделю (реакции и комментарии).\n"
     "• /report — недельный отчёт с идеями прямо сейчас.\n"
     "• /report_all — отчёт за всё время ведения канала.\n"
+    "• /scheduled — запланированные посты (кнопка «⏰ Позже» под черновиком).\n"
     "• /limit — сколько потрачено на ИИ.\n"
     "• /mode — режим публикации (с одобрением или авто).\n"
     "• /replies — предлагать ли ответы на комментарии.\n\n"
@@ -462,6 +592,37 @@ async def обычное_сообщение(update, context):
     сообщение = update.message
     if not сообщение.text:
         return
+
+    # Вы нажали «Своё время» — значит, это сообщение и есть время публикации.
+    post_id = context.user_data.get("ждём_время_для")
+    if post_id is not None:
+        if сообщение.text.strip().lower() in ("отмена", "отменить", "стоп"):
+            context.user_data.pop("ждём_время_для", None)
+            await сообщение.reply_text("Хорошо, не планирую. Черновик остался с кнопками.")
+            return
+        когда, ошибка = разобрать_время(сообщение.text)
+        if когда is None:
+            await сообщение.reply_text(f"{ошибка}\n\n{ПОДСКАЗКА_ВРЕМЕНИ}")
+            return
+        context.user_data.pop("ждём_время_для", None)
+        пост = db.получить_пост(post_id)
+        if not пост or пост["status"] != "draft":
+            await сообщение.reply_text("Этот черновик уже обработан.")
+            return
+        db.запланировать(post_id, когда)
+        текст = _текст_запланированного(post_id, пост["text"], когда)
+        try:
+            await context.bot.edit_message_text(
+                текст, chat_id=config.OWNER_ID, message_id=пост["draft_chat_msg_id"],
+                reply_markup=_кнопки_запланированного(post_id),
+            )
+        except Exception:
+            # Старое сообщение не отредактировать (например, удалено) — пришлём новое.
+            новое = await _написать_владельцу(context, текст, reply_markup=_кнопки_запланированного(post_id))
+            db.запомнить_сообщение_черновика(post_id, новое.message_id)
+        await сообщение.reply_text(f"⏰ Готово! Опубликую {_когда_по_местному(когда)}.")
+        return
+
     if сообщение.reply_to_message:
         пост = db.пост_по_сообщению_черновика(сообщение.reply_to_message.message_id)
         if пост:
@@ -612,6 +773,65 @@ async def задание_отчёт(context: ContextTypes.DEFAULT_TYPE):
     await отправить_отчёт(context)
 
 
+ОПОЗДАНИЕ_ДЛЯ_АВТОПУБЛИКАЦИИ = timedelta(hours=12)  # опоздали сильнее — сначала спросим вас
+
+
+async def задание_отложенные(context: ContextTypes.DEFAULT_TYPE):
+    """Каждую минуту: публикуем запланированные посты, время которых наступило."""
+    сейчас = datetime.now(timezone.utc)
+    for пост in db.пора_публиковать():
+        post_id = пост["id"]
+        if post_id in _в_работе:
+            continue
+        _в_работе.add(post_id)
+        try:
+            опоздание = сейчас - datetime.fromisoformat(пост["scheduled_at"])
+            if опоздание > ОПОЗДАНИЕ_ДЛЯ_АВТОПУБЛИКАЦИИ:
+                # Mac был выключен слишком долго — публиковать молча не будем, спросим вас.
+                db.снять_с_расписания(post_id)
+                сообщение = await _написать_владельцу(
+                    context,
+                    f"⏰ Этот пост был запланирован на {_когда_по_местному(пост['scheduled_at'])}, "
+                    "но компьютер был выключен. Что делаем?\n\n" + _текст_черновика(post_id, пост["text"]),
+                    reply_markup=_кнопки_черновика(post_id),
+                )
+                db.запомнить_сообщение_черновика(post_id, сообщение.message_id)
+                continue
+            try:
+                await опубликовать(context, post_id)
+            except Exception as e:  # сеть моргнула — попробуем через минуту
+                log.error("Отложенная публикация не удалась: %s: %s", type(e).__name__, str(e)[:200])
+                continue
+            try:
+                await context.bot.edit_message_text(
+                    f"{пост['text']}\n\n— — —\n✅ Опубликовано по расписанию "
+                    f"({_когда_по_местному(пост['scheduled_at'])}).",
+                    chat_id=config.OWNER_ID, message_id=пост["draft_chat_msg_id"],
+                )
+            except Exception:
+                pass
+            await _написать_владельцу(context, f"✅ Опубликовал запланированный пост: «{пост['text'][:60].strip()}…»")
+        finally:
+            _в_работе.discard(post_id)
+
+
+async def команда_запланированные(update, context):
+    if not await _только_владелец(update):
+        return
+    посты = db.запланированные()
+    if not посты:
+        await update.message.reply_text(
+            "Запланированных постов нет. Чтобы запланировать, нажмите «⏰ Позже» под черновиком."
+        )
+        return
+    await update.message.reply_text(f"Запланировано постов: {len(посты)}")
+    for п in посты[:20]:
+        await update.message.reply_text(
+            f"⏰ {_когда_по_местному(п['scheduled_at'])}\n\n{п['text'][:300]}",
+            reply_markup=_кнопки_запланированного(п["id"]),
+        )
+
+
 ДОГОНЯЕМ_ПРОПУЩЕННОЕ_ДО = timedelta(hours=30)  # если срок был не дольше этого назад — догоняем
 
 
@@ -664,6 +884,7 @@ async def после_запуска(app: Application):
         BotCommand("stats", "Как зашли посты за неделю"),
         BotCommand("report", "Недельный отчёт сейчас"),
         BotCommand("report_all", "Отчёт за всё время"),
+        BotCommand("scheduled", "Запланированные посты"),
         BotCommand("limit", "Сколько потрачено на ИИ"),
         BotCommand("mode", "Режим: с одобрением или авто"),
         BotCommand("replies", "Ответы на комментарии: вкл/выкл"),
@@ -692,13 +913,14 @@ def собрать_приложение() -> Application:
     for имя, функция in [
         ("start", команда_старт), ("help", команда_старт), ("post", команда_пост),
         ("idea", команда_идея), ("ideas", команда_идеи), ("stats", команда_статистика),
-        ("report", команда_отчёт), ("report_all", команда_отчёт_за_всё), ("limit", команда_лимит), ("mode", команда_режим),
+        ("report", команда_отчёт), ("report_all", команда_отчёт_за_всё),
+        ("scheduled", команда_запланированные), ("limit", команда_лимит), ("mode", команда_режим),
         ("replies", команда_ответы),
     ]:
         app.add_handler(CommandHandler(имя, функция))
 
     # Кнопки
-    app.add_handler(CallbackQueryHandler(нажатие_кнопки_черновика, pattern=r"^(pub|rew|rej):\d+$"))
+    app.add_handler(CallbackQueryHandler(нажатие_кнопки_черновика, pattern=r"^((pub|rew|rej|later|back|unsch):\d+|at:\d+:\w+)$"))
     app.add_handler(CallbackQueryHandler(нажатие_кнопки_ответа, pattern=r"^(crp|crj):\d+$"))
 
     # Обычные сообщения вам в личку
@@ -723,6 +945,8 @@ def собрать_приложение() -> Application:
         задание_отчёт, config.время_из_строки(о["время"], р["часовой_пояс"]),
         days=config.дни_из_списка([о["день"]]), name="отчёт",
     )
+    # Раз в минуту проверяем отложенные посты (первый раз — через 15 секунд после запуска).
+    app.job_queue.run_repeating(задание_отложенные, interval=60, first=15, name="отложенные")
     # Через 20 секунд после запуска проверяем, не пропустили ли мы срок, пока компьютер был выключен.
     if config.OWNER_ID:
         app.job_queue.run_once(догнать_пропущенное, when=20, name="догнать")
