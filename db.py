@@ -36,7 +36,7 @@ def создать_таблицы() -> None:
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 channel_msg_id INTEGER UNIQUE,      -- номер сообщения в канале (после публикации)
                 text TEXT NOT NULL,
-                status TEXT NOT NULL,               -- draft / published / rejected
+                status TEXT NOT NULL,               -- draft / scheduled / published / rejected
                 source TEXT NOT NULL,               -- bot (написал бот) / manual (вы сами)
                 draft_chat_msg_id INTEGER,          -- сообщение с черновиком в личке
                 created_at TEXT NOT NULL,
@@ -80,6 +80,10 @@ def создать_таблицы() -> None:
             );
             """
         )
+        # Обновление старой базы: колонка «когда опубликовать» для отложенных постов.
+        колонки = [r["name"] for r in c.execute("PRAGMA table_info(posts)")]
+        if "scheduled_at" not in колонки:
+            c.execute("ALTER TABLE posts ADD COLUMN scheduled_at TEXT")
 
 
 # ---------- Посты ----------
@@ -129,6 +133,37 @@ def отметить_опубликованным(post_id: int, channel_msg_id: 
             "UPDATE posts SET status='published', channel_msg_id=?, published_at=? WHERE id=?",
             (channel_msg_id, _сейчас(), post_id),
         )
+
+
+def запланировать(post_id: int, когда: datetime) -> None:
+    """Отложенная публикация: пост уйдёт в канал в указанное время."""
+    with _подключение() as c:
+        c.execute(
+            "UPDATE posts SET status='scheduled', scheduled_at=? WHERE id=?",
+            (когда.astimezone(timezone.utc).isoformat(timespec="seconds"), post_id),
+        )
+
+
+def снять_с_расписания(post_id: int) -> None:
+    """Отменить отложенную публикацию — пост снова становится черновиком."""
+    with _подключение() as c:
+        c.execute("UPDATE posts SET status='draft', scheduled_at=NULL WHERE id=?", (post_id,))
+
+
+def запланированные() -> list:
+    with _подключение() as c:
+        return c.execute(
+            "SELECT * FROM posts WHERE status='scheduled' ORDER BY scheduled_at"
+        ).fetchall()
+
+
+def пора_публиковать() -> list:
+    """Запланированные посты, время которых уже наступило."""
+    with _подключение() as c:
+        return c.execute(
+            "SELECT * FROM posts WHERE status='scheduled' AND scheduled_at <= ? ORDER BY scheduled_at",
+            (_сейчас(),),
+        ).fetchall()
 
 
 def отметить_отклонённым(post_id: int) -> None:
