@@ -380,6 +380,27 @@ def записать_отметку(ключ: str) -> None:
         c.execute("INSERT OR REPLACE INTO state (key, value) VALUES (?, ?)", (ключ, _сейчас()))
 
 
+def значение(ключ: str) -> str | None:
+    """Служебное значение по имени (например, какой формат поста был в прошлый раз)."""
+    with _подключение() as c:
+        r = c.execute("SELECT value FROM state WHERE key = ?", (ключ,)).fetchone()
+    return r["value"] if r else None
+
+
+def записать_значение(ключ: str, значение_: str) -> None:
+    with _подключение() as c:
+        c.execute("INSERT OR REPLACE INTO state (key, value) VALUES (?, ?)", (ключ, значение_))
+
+
+def последние_тексты_бота(сколько: int = 5) -> list[str]:
+    """Тексты последних черновиков бота (любых: опубликованных, отклонённых…) — чтобы не повторяться."""
+    with _подключение() as c:
+        строки = c.execute(
+            "SELECT text FROM posts WHERE source = 'bot' ORDER BY id DESC LIMIT ?", (сколько,)
+        ).fetchall()
+    return [r["text"] for r in строки]
+
+
 def последний_черновик_бота() -> datetime | None:
     """Когда бот в последний раз создавал черновик (любой: по расписанию или по вашей команде)."""
     with _подключение() as c:
