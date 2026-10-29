@@ -13,6 +13,7 @@ Telegram-бот-помощник для ведения вашего канала
 import asyncio
 import logging
 import re
+import sys
 from datetime import datetime, timedelta, timezone
 from zoneinfo import ZoneInfo
 
@@ -1199,6 +1200,12 @@ def main():
     # ВАЖНО: эти библиотеки пишут в журнал адреса запросов, а в них зашит токен бота. Глушим.
     for шумная in ("httpx", "httpcore", "telegram", "apscheduler"):
         logging.getLogger(шумная).setLevel(logging.WARNING)
+
+    if sys.platform == "win32":
+        # Не даём Windows уснуть из-за простоя, пока бот работает (как caffeinate на Mac).
+        import ctypes
+        ES_CONTINUOUS, ES_SYSTEM_REQUIRED = 0x80000000, 0x00000001
+        ctypes.windll.kernel32.SetThreadExecutionState(ES_CONTINUOUS | ES_SYSTEM_REQUIRED)
 
     app = собрать_приложение()
     log.info("Бот запущен. Остановить: Ctrl+C.")
